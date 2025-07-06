@@ -8,6 +8,10 @@
 (define-constant ERR_NOT_RESIDENT (err u106))
 (define-constant ERR_ALREADY_RESIDENT (err u107))
 (define-constant ERR_PROPOSAL_NOT_PASSED (err u108))
+(define-constant ERR_BUDGET_EXCEEDED (err u109))
+(define-constant ERR_INVALID_CATEGORY (err u110))
+(define-constant ERR_BUDGET_NOT_SET (err u111))
+
 
 (define-data-var proposal-counter uint u0)
 (define-data-var treasury-balance uint u0)
@@ -240,5 +244,94 @@
   (match (map-get? proposals proposal-id)
     proposal (> (get votes-for proposal) (get votes-against proposal))
     false
+  )
+)
+
+(define-map budget-allocations
+  (string-ascii 20)
+  {
+    allocated-amount: uint,
+    spent-amount: uint,
+    active: bool
+  }
+)
+
+(define-public (set-budget-allocation 
+  (category (string-ascii 20))
+  (amount uint)
+)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (<= amount (var-get treasury-balance)) ERR_INSUFFICIENT_FUNDS)
+    (map-set budget-allocations category
+      {
+        allocated-amount: amount,
+        spent-amount: u0,
+        active: true
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-public (execute-proposal-with-budget 
+  (proposal-id uint)
+  (budget-category (string-ascii 20))
+)
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (budget (unwrap! (map-get? budget-allocations budget-category) ERR_BUDGET_NOT_SET))
+      (current-treasury (var-get treasury-balance))
+      (requested-amount (get amount-requested proposal))
+      (available-budget (- (get allocated-amount budget) (get spent-amount budget)))
+    )
+    (asserts! (>= stacks-block-height (get voting-end-height proposal)) ERR_VOTING_ACTIVE)
+    (asserts! (not (get executed proposal)) ERR_PROPOSAL_NOT_PASSED)
+    (asserts! (> (get votes-for proposal) (get votes-against proposal)) ERR_PROPOSAL_NOT_PASSED)
+    (asserts! (>= current-treasury requested-amount) ERR_INSUFFICIENT_FUNDS)
+    (asserts! (>= available-budget requested-amount) ERR_BUDGET_EXCEEDED)
+    (asserts! (get active budget) ERR_INVALID_CATEGORY)
+    
+    (try! (as-contract (stx-transfer? requested-amount tx-sender (get proposer proposal))))
+    (var-set treasury-balance (- current-treasury requested-amount))
+    (map-set proposals proposal-id (merge proposal { executed: true }))
+    (map-set budget-allocations budget-category
+      (merge budget { spent-amount: (+ (get spent-amount budget) requested-amount) })
+    )
+    (ok true)
+  )
+)
+
+(define-public (deactivate-budget-category (category (string-ascii 20)))
+  (let
+    (
+      (budget (unwrap! (map-get? budget-allocations category) ERR_BUDGET_NOT_SET))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (map-set budget-allocations category (merge budget { active: false }))
+    (ok true)
+  )
+)
+
+(define-read-only (get-budget-allocation (category (string-ascii 20)))
+  (map-get? budget-allocations category)
+)
+
+(define-read-only (get-available-budget (category (string-ascii 20)))
+  (match (map-get? budget-allocations category)
+    budget (some (- (get allocated-amount budget) (get spent-amount budget)))
+    none
+  )
+)
+
+(define-read-only (get-budget-utilization (category (string-ascii 20)))
+  (match (map-get? budget-allocations category)
+    budget 
+      (if (> (get allocated-amount budget) u0)
+        (some (/ (* (get spent-amount budget) u100) (get allocated-amount budget)))
+        (some u0)
+      )
+    none
   )
 )
