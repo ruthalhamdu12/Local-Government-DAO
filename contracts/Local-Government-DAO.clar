@@ -12,6 +12,17 @@
 (define-constant ERR_INVALID_CATEGORY (err u110))
 (define-constant ERR_BUDGET_NOT_SET (err u111))
 
+(define-constant ERR_NOT_EMERGENCY_RESPONDER (err u112))
+(define-constant ERR_EMERGENCY_FUND_DEPLETED (err u113))
+(define-constant ERR_EMERGENCY_COOLDOWN_ACTIVE (err u114))
+(define-constant ERR_AMOUNT_EXCEEDS_LIMIT (err u115))
+
+(define-data-var emergency-fund-balance uint u0)
+(define-data-var emergency-deployment-counter uint u0)
+(define-data-var last-emergency-deployment uint u0)
+(define-data-var emergency-cooldown-period uint u144)
+(define-data-var max-emergency-deployment uint u50000)
+
 
 (define-data-var proposal-counter uint u0)
 (define-data-var treasury-balance uint u0)
@@ -334,4 +345,95 @@
       )
     none
   )
+)
+
+
+(define-map emergency-responders principal bool)
+
+(define-map emergency-deployments
+  uint
+  {
+    responder: principal,
+    amount: uint,
+    reason: (string-ascii 200),
+    deployment-height: uint,
+    emergency-type: (string-ascii 50)
+  }
+)
+
+(define-public (authorize-emergency-responder (responder principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (map-set emergency-responders responder true)
+    (ok true)
+  )
+)
+
+(define-public (revoke-emergency-responder (responder principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (map-delete emergency-responders responder)
+    (ok true)
+  )
+)
+
+(define-public (fund-emergency-reserve (amount uint))
+  (begin
+    (asserts! (default-to false (map-get? residents tx-sender)) ERR_NOT_RESIDENT)
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (var-set emergency-fund-balance (+ (var-get emergency-fund-balance) amount))
+    (ok true)
+  )
+)
+
+(define-public (deploy-emergency-funds 
+  (amount uint)
+  (reason (string-ascii 200))
+  (emergency-type (string-ascii 50))
+)
+  (let
+    (
+      (deployment-id (+ (var-get emergency-deployment-counter) u1))
+      (current-fund (var-get emergency-fund-balance))
+      (last-deployment (var-get last-emergency-deployment))
+      (cooldown-blocks (var-get emergency-cooldown-period))
+      (max-amount (var-get max-emergency-deployment))
+    )
+    (asserts! (default-to false (map-get? emergency-responders tx-sender)) ERR_NOT_EMERGENCY_RESPONDER)
+    (asserts! (>= current-fund amount) ERR_EMERGENCY_FUND_DEPLETED)
+    (asserts! (<= amount max-amount) ERR_AMOUNT_EXCEEDS_LIMIT)
+    (asserts! (>= stacks-block-height (+ last-deployment cooldown-blocks)) ERR_EMERGENCY_COOLDOWN_ACTIVE)
+    
+    (try! (as-contract (stx-transfer? amount tx-sender tx-sender)))
+    (var-set emergency-fund-balance (- current-fund amount))
+    (var-set last-emergency-deployment stacks-block-height)
+    (var-set emergency-deployment-counter deployment-id)
+    
+    (map-set emergency-deployments deployment-id
+      {
+        responder: tx-sender,
+        amount: amount,
+        reason: reason,
+        deployment-height: stacks-block-height,
+        emergency-type: emergency-type
+      }
+    )
+    (ok deployment-id)
+  )
+)
+
+(define-read-only (get-emergency-fund-balance)
+  (var-get emergency-fund-balance)
+)
+
+(define-read-only (is-emergency-responder (responder principal))
+  (default-to false (map-get? emergency-responders responder))
+)
+
+(define-read-only (get-emergency-deployment (deployment-id uint))
+  (map-get? emergency-deployments deployment-id)
+)
+
+(define-read-only (get-emergency-deployment-count)
+  (var-get emergency-deployment-counter)
 )
