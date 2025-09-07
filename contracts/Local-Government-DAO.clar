@@ -17,6 +17,12 @@
 (define-constant ERR_EMERGENCY_COOLDOWN_ACTIVE (err u114))
 (define-constant ERR_AMOUNT_EXCEEDS_LIMIT (err u115))
 
+(define-constant ERR_ASSET_NOT_FOUND (err u116))
+(define-constant ERR_INVALID_ASSET_STATUS (err u117))
+(define-constant ERR_ASSET_ALREADY_EXISTS (err u118))
+
+(define-data-var asset-counter uint u0)
+
 (define-data-var emergency-fund-balance uint u0)
 (define-data-var emergency-deployment-counter uint u0)
 (define-data-var last-emergency-deployment uint u0)
@@ -436,4 +442,101 @@
 
 (define-read-only (get-emergency-deployment-count)
   (var-get emergency-deployment-counter)
+)
+
+
+
+(define-map community-assets
+  uint
+  {
+    name: (string-ascii 100),
+    asset-type: (string-ascii 30),
+    current-value: uint,
+    acquisition-date: uint,
+    location: (string-ascii 100),
+    status: (string-ascii 20),
+    manager: principal,
+    last-maintenance: uint
+  }
+)
+
+(define-map asset-history
+  { asset-id: uint, record-id: uint }
+  {
+    action: (string-ascii 50),
+    old-value: uint,
+    new-value: uint,
+    timestamp: uint,
+    updated-by: principal
+  }
+)
+
+(define-data-var history-counter uint u0)
+
+(define-public (register-community-asset
+  (name (string-ascii 100))
+  (asset-type (string-ascii 30))
+  (initial-value uint)
+  (location (string-ascii 100))
+  (manager principal)
+)
+  (let
+    ((asset-id (+ (var-get asset-counter) u1)))
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (map-set community-assets asset-id
+      {
+        name: name,
+        asset-type: asset-type,
+        current-value: initial-value,
+        acquisition-date: stacks-block-height,
+        location: location,
+        status: "active",
+        manager: manager,
+        last-maintenance: stacks-block-height
+      }
+    )
+    (var-set asset-counter asset-id)
+    (ok asset-id)
+  )
+)
+
+(define-public (update-asset-value (asset-id uint) (new-value uint))
+  (let
+    (
+      (asset (unwrap! (map-get? community-assets asset-id) ERR_ASSET_NOT_FOUND))
+      (history-id (+ (var-get history-counter) u1))
+    )
+    (asserts! (or (is-eq tx-sender CONTRACT_OWNER) (is-eq tx-sender (get manager asset))) ERR_NOT_AUTHORIZED)
+    (map-set asset-history { asset-id: asset-id, record-id: history-id }
+      {
+        action: "value-update",
+        old-value: (get current-value asset),
+        new-value: new-value,
+        timestamp: stacks-block-height,
+        updated-by: tx-sender
+      }
+    )
+    (map-set community-assets asset-id (merge asset { current-value: new-value }))
+    (var-set history-counter history-id)
+    (ok true)
+  )
+)
+
+(define-read-only (get-community-asset (asset-id uint))
+  (map-get? community-assets asset-id)
+)
+
+(define-read-only (get-total-asset-value)
+  (fold calculate-total-value (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10) u0)
+)
+
+(define-read-only (get-asset-count)
+  (var-get asset-counter)
+)
+
+(define-private (calculate-total-value (asset-id uint) (total uint))
+  (match (map-get? community-assets asset-id)
+    asset (+ total (get current-value asset))
+    total
+  )
 )
