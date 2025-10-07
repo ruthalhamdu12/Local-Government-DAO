@@ -21,6 +21,12 @@
 (define-constant ERR_INVALID_ASSET_STATUS (err u117))
 (define-constant ERR_ASSET_ALREADY_EXISTS (err u118))
 
+
+(define-constant ERR_ACHIEVEMENT_ALREADY_RECORDED (err u119))
+(define-constant ERR_INVALID_ACHIEVEMENT_TYPE (err u120))
+
+(define-data-var achievement-counter uint u0)
+
 (define-data-var asset-counter uint u0)
 
 (define-data-var emergency-fund-balance uint u0)
@@ -538,5 +544,90 @@
   (match (map-get? community-assets asset-id)
     asset (+ total (get current-value asset))
     total
+  )
+)
+
+(define-map resident-reputation
+  principal
+  {
+    total-score: uint,
+    proposals-created: uint,
+    votes-cast: uint,
+    treasury-contributions: uint,
+    member-since: uint,
+    last-activity: uint
+  }
+)
+
+(define-map achievements
+  { resident: principal, achievement-id: uint }
+  {
+    achievement-type: (string-ascii 30),
+    points-awarded: uint,
+    timestamp: uint,
+    description: (string-ascii 100)
+  }
+)
+
+(define-public (award-achievement
+  (resident principal)
+  (achievement-type (string-ascii 30))
+  (points uint)
+  (description (string-ascii 100))
+)
+  (let
+    (
+      (achievement-id (+ (var-get achievement-counter) u1))
+      (current-rep (default-to 
+        { total-score: u0, proposals-created: u0, votes-cast: u0, 
+          treasury-contributions: u0, member-since: stacks-block-height, last-activity: stacks-block-height }
+        (map-get? resident-reputation resident)))
+    )
+    (asserts! (default-to false (map-get? residents resident)) ERR_NOT_RESIDENT)
+    (map-set achievements { resident: resident, achievement-id: achievement-id }
+      {
+        achievement-type: achievement-type,
+        points-awarded: points,
+        timestamp: stacks-block-height,
+        description: description
+      }
+    )
+    (map-set resident-reputation resident
+      (merge current-rep { 
+        total-score: (+ (get total-score current-rep) points),
+        last-activity: stacks-block-height
+      })
+    )
+    (var-set achievement-counter achievement-id)
+    (ok achievement-id)
+  )
+)
+
+(define-read-only (get-resident-reputation (resident principal))
+  (map-get? resident-reputation resident)
+)
+
+(define-read-only (get-achievement-record (resident principal) (achievement-id uint))
+  (map-get? achievements { resident: resident, achievement-id: achievement-id })
+)
+
+(define-read-only (get-reputation-tier (resident principal))
+  (match (map-get? resident-reputation resident)
+    rep (calculate-tier (get total-score rep))
+    "unranked"
+  )
+)
+
+(define-private (calculate-tier (score uint))
+  (if (>= score u1000) "legendary"
+    (if (>= score u500) "elite"
+      (if (>= score u250) "veteran"
+        (if (>= score u100) "active"
+          (if (>= score u25) "emerging"
+            "novice"
+          )
+        )
+      )
+    )
   )
 )
