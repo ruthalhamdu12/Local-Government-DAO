@@ -25,6 +25,14 @@
 (define-constant ERR_ACHIEVEMENT_ALREADY_RECORDED (err u119))
 (define-constant ERR_INVALID_ACHIEVEMENT_TYPE (err u120))
 
+(define-constant ERR_PETITION_NOT_FOUND (err u121))
+(define-constant ERR_ALREADY_SIGNED_PETITION (err u122))
+(define-constant ERR_PETITION_EXPIRED (err u123))
+(define-constant ERR_INVALID_THRESHOLD (err u124))
+(define-constant ERR_PETITION_ALREADY_SUCCESSFUL (err u125))
+
+(define-data-var petition-counter uint u0)
+
 (define-data-var achievement-counter uint u0)
 
 (define-data-var asset-counter uint u0)
@@ -630,4 +638,100 @@
       )
     )
   )
+)
+
+(define-map petitions
+  uint
+  {
+    title: (string-ascii 100),
+    description: (string-ascii 300),
+    creator: principal,
+    created-at: uint,
+    expires-at: uint,
+    signature-threshold: uint,
+    current-signatures: uint,
+    petition-category: (string-ascii 30),
+    successful: bool
+  }
+)
+
+(define-map petition-signatures
+  { petition-id: uint, signer: principal }
+  { signed-at: uint, voting-power: uint }
+)
+
+(define-public (create-petition
+  (title (string-ascii 100))
+  (description (string-ascii 300))
+  (signature-threshold uint)
+  (duration uint)
+  (category (string-ascii 30))
+)
+  (let
+    (
+      (petition-id (+ (var-get petition-counter) u1))
+      (expires-at (+ stacks-block-height duration))
+    )
+    (asserts! (default-to false (map-get? residents tx-sender)) ERR_NOT_RESIDENT)
+    (asserts! (> signature-threshold u0) ERR_INVALID_THRESHOLD)
+    (map-set petitions petition-id
+      {
+        title: title,
+        description: description,
+        creator: tx-sender,
+        created-at: stacks-block-height,
+        expires-at: expires-at,
+        signature-threshold: signature-threshold,
+        current-signatures: u0,
+        petition-category: category,
+        successful: false
+      }
+    )
+    (var-set petition-counter petition-id)
+    (ok petition-id)
+  )
+)
+
+(define-public (sign-petition (petition-id uint))
+  (let
+    (
+      (petition (unwrap! (map-get? petitions petition-id) ERR_PETITION_NOT_FOUND))
+      (signer-power (default-to u0 (map-get? resident-voting-power tx-sender)))
+      (signature-key { petition-id: petition-id, signer: tx-sender })
+      (new-signature-count (+ (get current-signatures petition) signer-power))
+      (threshold-met (>= new-signature-count (get signature-threshold petition)))
+    )
+    (asserts! (default-to false (map-get? residents tx-sender)) ERR_NOT_RESIDENT)
+    (asserts! (is-none (map-get? petition-signatures signature-key)) ERR_ALREADY_SIGNED_PETITION)
+    (asserts! (< stacks-block-height (get expires-at petition)) ERR_PETITION_EXPIRED)
+    (map-set petition-signatures signature-key
+      { signed-at: stacks-block-height, voting-power: signer-power }
+    )
+    (map-set petitions petition-id
+      (merge petition { 
+        current-signatures: new-signature-count,
+        successful: (or (get successful petition) threshold-met)
+      })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-petition (petition-id uint))
+  (map-get? petitions petition-id)
+)
+
+(define-read-only (get-petition-signature (petition-id uint) (signer principal))
+  (map-get? petition-signatures { petition-id: petition-id, signer: signer })
+)
+
+(define-read-only (is-petition-successful (petition-id uint))
+  (match (map-get? petitions petition-id)
+    petition (get successful petition)
+    false
+  )
+)
+
+(define-read-only (get-petition-count)
+  (var-get petition-counter)
 )
